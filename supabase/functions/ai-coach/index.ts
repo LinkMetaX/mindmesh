@@ -1,4 +1,5 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts"
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -12,6 +13,8 @@ interface TaskBreakdownRequest {
     existing_tasks?: string[];
     mood_score?: number;
     energy_level?: number;
+    user_id?: string;
+    include_historical_data?: boolean;
   };
 }
 
@@ -21,16 +24,29 @@ interface TaskBreakdownResponse {
   priority_suggestion?: 'low' | 'medium' | 'high';
   estimated_time?: string;
   encouragement: string;
+  personalized_insights?: string[];
+  recommended_strategies?: string[];
+}
+
+interface UserHistoricalData {
+  mood_patterns: any[];
+  task_completion_stats: any;
+  brain_dump_categories: any[];
+  productive_hours: number[];
+  common_struggles: string[];
 }
 
 const GEMINI_API_KEY = Deno.env.get('GEMINI_API_KEY');
+const SUPABASE_URL = Deno.env.get('SUPABASE_URL');
+const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
+
+const supabase = createClient(SUPABASE_URL!, SUPABASE_SERVICE_ROLE_KEY!);
 
 async function callGeminiAPI(prompt: string): Promise<string> {
   if (!GEMINI_API_KEY) {
     throw new Error('Gemini API key not configured');
   }
 
-  // Updated to use the correct Gemini API endpoint
   const response = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${GEMINI_API_KEY}`,
     {
@@ -70,10 +86,91 @@ async function callGeminiAPI(prompt: string): Promise<string> {
   return data.candidates[0].content.parts[0].text;
 }
 
-function createCoachingPrompt(request: TaskBreakdownRequest): string {
+async function getUserHistoricalData(userId: string): Promise<UserHistoricalData> {
+  const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+  
+  // Get mood patterns
+  const { data: moodEntries } = await supabase
+    .from('mood_entries')
+    .select('*')
+    .eq('user_id', userId)
+    .gte('created_at', thirtyDaysAgo)
+    .order('created_at', { ascending: false });
+
+  // Get task completion stats
+  const { data: tasks } = await supabase
+    .from('tasks')
+    .select('*')
+    .eq('user_id', userId)
+    .gte('created_at', thirtyDaysAgo);
+
+  // Get brain dump categories
+  const { data: brainDumps } = await supabase
+    .from('brain_dumps')
+    .select('ai_result')
+    .eq('user_id', userId)
+    .eq('processed', true)
+    .gte('created_at', thirtyDaysAgo);
+
+  // Analyze productive hours from completed tasks
+  const completedTasks = tasks?.filter(t => t.status === 'completed' && t.completed_at) || [];
+  const productiveHours: { [hour: number]: number } = {};
+  
+  completedTasks.forEach(task => {
+    if (task.completed_at) {
+      const hour = new Date(task.completed_at).getHours();
+      productiveHours[hour] = (productiveHours[hour] || 0) + 1;
+    }
+  });
+
+  const topProductiveHours = Object.entries(productiveHours)
+    .sort(([,a], [,b]) => b - a)
+    .slice(0, 3)
+    .map(([hour]) => parseInt(hour));
+
+  // Analyze common struggles from brain dumps
+  const strugglesKeywords = ['overwhelmed', 'stuck', 'procrastinating', 'anxious', 'confused', 'tired'];
+  const commonStruggles: string[] = [];
+  
+  brainDumps?.forEach(dump => {
+    if (dump.ai_result?.category === 'reflection') {
+      strugglesKeywords.forEach(keyword => {
+        if (dump.ai_result.summary?.toLowerCase().includes(keyword)) {
+          commonStruggles.push(keyword);
+        }
+      });
+    }
+  });
+
+  // Calculate task completion stats
+  const totalTasks = tasks?.length || 0;
+  const completedTasksCount = completedTasks.length;
+  const completionRate = totalTasks > 0 ? completedTasksCount / totalTasks : 0;
+  
+  const tasksByPriority = {
+    high: tasks?.filter(t => t.priority === 'high').length || 0,
+    medium: tasks?.filter(t => t.priority === 'medium').length || 0,
+    low: tasks?.filter(t => t.priority === 'low').length || 0,
+  };
+
+  return {
+    mood_patterns: moodEntries || [],
+    task_completion_stats: {
+      total_tasks: totalTasks,
+      completed_tasks: completedTasksCount,
+      completion_rate: completionRate,
+      tasks_by_priority: tasksByPriority,
+    },
+    brain_dump_categories: brainDumps?.map(d => d.ai_result).filter(Boolean) || [],
+    productive_hours: topProductiveHours,
+    common_struggles: [...new Set(commonStruggles)], // Remove duplicates
+  };
+}
+
+function createEnhancedCoachingPrompt(request: TaskBreakdownRequest, historicalData?: UserHistoricalData): string {
   const { input, type, context } = request;
   
-  let basePrompt = `You are a gentle, encouraging AI coach specifically designed for neurodivergent minds (ADHD, autism, anxiety). Your role is to help break down tasks and provide supportive guidance.
+  let basePrompt = `You are a gentle, encouraging AI coach specifically designed for neurodivergent minds (ADHD, autism, anxiety). Your role is to help break down tasks and provide supportive guidance using deep contextual understanding.
 
 User Input Type: ${type}
 User Input: "${input}"`;
@@ -88,6 +185,38 @@ User Input: "${input}"`;
     basePrompt += `\nExisting Tasks: ${context.existing_tasks.join(', ')}`;
   }
 
+  // Add historical context if available
+  if (historicalData) {
+    basePrompt += `\n\n=== HISTORICAL CONTEXT (Last 30 Days) ===`;
+    
+    if (historicalData.mood_patterns.length > 0) {
+      const avgMood = historicalData.mood_patterns.reduce((sum, entry) => sum + entry.mood_score, 0) / historicalData.mood_patterns.length;
+      const avgEnergy = historicalData.mood_patterns.reduce((sum, entry) => sum + entry.energy_level, 0) / historicalData.mood_patterns.length;
+      basePrompt += `\nAverage Mood: ${avgMood.toFixed(1)}/10, Average Energy: ${avgEnergy.toFixed(1)}/10`;
+    }
+
+    if (historicalData.task_completion_stats) {
+      basePrompt += `\nTask Completion Rate: ${(historicalData.task_completion_stats.completion_rate * 100).toFixed(1)}%`;
+      basePrompt += `\nTotal Tasks: ${historicalData.task_completion_stats.total_tasks}, Completed: ${historicalData.task_completion_stats.completed_tasks}`;
+    }
+
+    if (historicalData.productive_hours.length > 0) {
+      basePrompt += `\nMost Productive Hours: ${historicalData.productive_hours.map(h => `${h}:00`).join(', ')}`;
+    }
+
+    if (historicalData.common_struggles.length > 0) {
+      basePrompt += `\nCommon Challenges: ${historicalData.common_struggles.join(', ')}`;
+    }
+
+    if (historicalData.brain_dump_categories.length > 0) {
+      const categories = historicalData.brain_dump_categories.reduce((acc, item) => {
+        acc[item.category] = (acc[item.category] || 0) + 1;
+        return acc;
+      }, {} as Record<string, number>);
+      basePrompt += `\nBrain Dump Patterns: ${Object.entries(categories).map(([cat, count]) => `${cat}(${count})`).join(', ')}`;
+    }
+  }
+
   basePrompt += `
 
 Please respond with a JSON object containing:
@@ -96,7 +225,9 @@ Please respond with a JSON object containing:
   "subtasks": ["array", "of", "specific", "actionable", "subtasks", "if", "applicable"],
   "priority_suggestion": "low|medium|high based on urgency and user's current state",
   "estimated_time": "realistic time estimate like '15-30 minutes' or 'Quick 5-minute task'",
-  "encouragement": "A specific, personalized encouragement that validates their neurodivergent experience"
+  "encouragement": "A specific, personalized encouragement that validates their neurodivergent experience",
+  "personalized_insights": ["array", "of", "insights", "based", "on", "historical", "patterns"],
+  "recommended_strategies": ["array", "of", "specific", "strategies", "based", "on", "user", "patterns"]
 }
 
 Guidelines:
@@ -108,12 +239,15 @@ Guidelines:
 - Be specific and actionable
 - Validate their feelings and experiences
 - Use "you" language to make it personal
+- Leverage historical patterns to provide personalized insights
+- Reference their productive hours and past successes when relevant
+- Address their common challenges with specific strategies
 
-Examples of good coaching language:
-- "Your brain is working perfectly - it just needs the right support"
-- "Let's make this feel less overwhelming by breaking it down"
-- "Starting is often the hardest part, and you're already taking that step"
-- "This is completely manageable when we take it one piece at a time"
+Examples of enhanced coaching language:
+- "Based on your patterns, you tend to be most productive around [time], so this might be a good time to tackle this"
+- "I notice you've successfully completed similar tasks before, so you have the skills for this"
+- "Given your recent energy levels, let's break this into smaller chunks"
+- "Your brain dump patterns show you're great at [strength], so let's use that here"
 
 Respond ONLY with valid JSON, no additional text.`;
 
@@ -138,8 +272,20 @@ serve(async (req) => {
       )
     }
 
-    // Create the coaching prompt
-    const prompt = createCoachingPrompt({ input, type, context });
+    let historicalData: UserHistoricalData | undefined;
+
+    // Fetch historical data if user_id is provided and historical data is requested
+    if (context?.user_id && context?.include_historical_data) {
+      try {
+        historicalData = await getUserHistoricalData(context.user_id);
+      } catch (error) {
+        console.error('Error fetching historical data:', error);
+        // Continue without historical data rather than failing
+      }
+    }
+
+    // Create the enhanced coaching prompt
+    const prompt = createEnhancedCoachingPrompt({ input, type, context }, historicalData);
 
     // Call Gemini API
     const geminiResponse = await callGeminiAPI(prompt);

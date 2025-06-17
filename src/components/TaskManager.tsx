@@ -1,20 +1,49 @@
 import React, { useState, useEffect } from 'react';
-import { Plus, CheckCircle, Clock, AlertCircle, Trash2, Edit3, Brain } from 'lucide-react';
+import { 
+  Plus, 
+  CheckCircle, 
+  Clock, 
+  AlertCircle, 
+  Trash2, 
+  Edit3, 
+  Brain, 
+  ChevronRight, 
+  ChevronDown,
+  GripVertical,
+  Repeat,
+  Calendar,
+  Tag,
+  MoreHorizontal
+} from 'lucide-react';
 import { Task, createTask, getTasks, updateTask, deleteTask } from '../lib/supabase';
 import { useAICoach } from '../hooks/useAICoach';
+import { useAuth } from '../hooks/useAuth';
 import { AICoachResponse } from './AICoachResponse';
 
+interface ExtendedTask extends Task {
+  subtasks?: ExtendedTask[];
+  isExpanded?: boolean;
+}
+
 export const TaskManager: React.FC = () => {
-  const [tasks, setTasks] = useState<Task[]>([]);
+  const { user } = useAuth();
+  const [tasks, setTasks] = useState<ExtendedTask[]>([]);
   const [loading, setLoading] = useState(true);
   const [showAddForm, setShowAddForm] = useState(false);
+  const [editingTask, setEditingTask] = useState<string | null>(null);
   const [aiResponse, setAiResponse] = useState<any>(null);
+  const [draggedTask, setDraggedTask] = useState<string | null>(null);
   const [newTask, setNewTask] = useState({
     title: '',
     description: '',
     priority: 'medium' as Task['priority'],
     due_date: '',
+    parent_task_id: '',
+    recurrence_pattern: '',
+    recurrence_end_date: '',
+    tags: [] as string[],
   });
+  const [newTag, setNewTag] = useState('');
 
   const { getCoachingResponse, loading: aiLoading } = useAICoach();
 
@@ -26,7 +55,33 @@ export const TaskManager: React.FC = () => {
     try {
       const { data, error } = await getTasks();
       if (error) throw error;
-      setTasks(data || []);
+      
+      // Organize tasks into hierarchy
+      const taskMap = new Map<string, ExtendedTask>();
+      const rootTasks: ExtendedTask[] = [];
+      
+      (data || []).forEach(task => {
+        taskMap.set(task.id, { ...task, subtasks: [], isExpanded: false });
+      });
+      
+      taskMap.forEach(task => {
+        if (task.parent_task_id && taskMap.has(task.parent_task_id)) {
+          const parent = taskMap.get(task.parent_task_id)!;
+          parent.subtasks!.push(task);
+        } else {
+          rootTasks.push(task);
+        }
+      });
+      
+      // Sort by task_order
+      rootTasks.sort((a, b) => (a.task_order || 0) - (b.task_order || 0));
+      rootTasks.forEach(task => {
+        if (task.subtasks) {
+          task.subtasks.sort((a, b) => (a.task_order || 0) - (b.task_order || 0));
+        }
+      });
+      
+      setTasks(rootTasks);
     } catch (error) {
       console.error('Error loading tasks:', error);
     } finally {
@@ -43,6 +98,8 @@ export const TaskManager: React.FC = () => {
       type: 'task',
       context: {
         existing_tasks: tasks.map(t => t.title),
+        user_id: user?.id,
+        include_historical_data: true,
       }
     });
 
@@ -54,13 +111,26 @@ export const TaskManager: React.FC = () => {
       const taskData = {
         ...newTask,
         priority: coachingResponse?.priority_suggestion || newTask.priority,
+        parent_task_id: newTask.parent_task_id || undefined,
+        recurrence_pattern: newTask.recurrence_pattern || undefined,
+        recurrence_end_date: newTask.recurrence_end_date || undefined,
+        tags: newTask.tags,
       };
 
       const { data, error } = await createTask(taskData);
       if (error) throw error;
       if (data) {
-        setTasks([data, ...tasks]);
-        setNewTask({ title: '', description: '', priority: 'medium', due_date: '' });
+        await loadTasks(); // Reload to get proper hierarchy
+        setNewTask({ 
+          title: '', 
+          description: '', 
+          priority: 'medium', 
+          due_date: '', 
+          parent_task_id: '',
+          recurrence_pattern: '',
+          recurrence_end_date: '',
+          tags: [],
+        });
         setShowAddForm(false);
       }
     } catch (error) {
@@ -68,17 +138,18 @@ export const TaskManager: React.FC = () => {
     }
   };
 
-  const handleSubtaskAdd = async (subtaskTitle: string) => {
+  const handleSubtaskAdd = async (subtaskTitle: string, parentId?: string) => {
     try {
       const { data, error } = await createTask({
         title: subtaskTitle,
         description: 'Generated from AI coaching',
         priority: 'medium',
         due_date: '',
+        parent_task_id: parentId,
       });
       if (error) throw error;
       if (data) {
-        setTasks([data, ...tasks]);
+        await loadTasks();
       }
     } catch (error) {
       console.error('Error creating subtask:', error);
@@ -95,10 +166,58 @@ export const TaskManager: React.FC = () => {
       const { data, error } = await updateTask(id, updates);
       if (error) throw error;
       if (data) {
-        setTasks(tasks.map(task => task.id === id ? data : task));
+        await loadTasks();
+        
+        // Handle recurring tasks
+        if (status === 'completed' && data.recurrence_pattern) {
+          await createRecurringTask(data);
+        }
       }
     } catch (error) {
       console.error('Error updating task:', error);
+    }
+  };
+
+  const createRecurringTask = async (completedTask: Task) => {
+    if (!completedTask.recurrence_pattern) return;
+    
+    const now = new Date();
+    let nextDueDate = new Date(completedTask.due_date || now);
+    
+    switch (completedTask.recurrence_pattern) {
+      case 'daily':
+        nextDueDate.setDate(nextDueDate.getDate() + 1);
+        break;
+      case 'weekly':
+        nextDueDate.setDate(nextDueDate.getDate() + 7);
+        break;
+      case 'monthly':
+        nextDueDate.setMonth(nextDueDate.getMonth() + 1);
+        break;
+      case 'yearly':
+        nextDueDate.setFullYear(nextDueDate.getFullYear() + 1);
+        break;
+    }
+    
+    // Check if we should create the next instance
+    const endDate = completedTask.recurrence_end_date ? new Date(completedTask.recurrence_end_date) : null;
+    if (endDate && nextDueDate > endDate) {
+      return; // Don't create if past end date
+    }
+    
+    try {
+      await createTask({
+        title: completedTask.title,
+        description: completedTask.description,
+        priority: completedTask.priority,
+        due_date: nextDueDate.toISOString(),
+        recurrence_pattern: completedTask.recurrence_pattern,
+        recurrence_end_date: completedTask.recurrence_end_date,
+        tags: completedTask.tags || [],
+      });
+      await loadTasks();
+    } catch (error) {
+      console.error('Error creating recurring task:', error);
     }
   };
 
@@ -106,10 +225,80 @@ export const TaskManager: React.FC = () => {
     try {
       const { error } = await deleteTask(id);
       if (error) throw error;
-      setTasks(tasks.filter(task => task.id !== id));
+      await loadTasks();
     } catch (error) {
       console.error('Error deleting task:', error);
     }
+  };
+
+  const handleTaskReorder = async (taskId: string, newOrder: number) => {
+    try {
+      const { error } = await updateTask(taskId, { task_order: newOrder });
+      if (error) throw error;
+      await loadTasks();
+    } catch (error) {
+      console.error('Error reordering task:', error);
+    }
+  };
+
+  const handleDragStart = (e: React.DragEvent, taskId: string) => {
+    setDraggedTask(taskId);
+    e.dataTransfer.effectAllowed = 'move';
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+  };
+
+  const handleDrop = (e: React.DragEvent, targetTaskId: string) => {
+    e.preventDefault();
+    if (!draggedTask || draggedTask === targetTaskId) return;
+    
+    const targetTask = findTaskById(targetTaskId);
+    if (targetTask) {
+      handleTaskReorder(draggedTask, (targetTask.task_order || 0) + 1);
+    }
+    setDraggedTask(null);
+  };
+
+  const findTaskById = (id: string): ExtendedTask | null => {
+    for (const task of tasks) {
+      if (task.id === id) return task;
+      if (task.subtasks) {
+        for (const subtask of task.subtasks) {
+          if (subtask.id === id) return subtask;
+        }
+      }
+    }
+    return null;
+  };
+
+  const toggleTaskExpansion = (taskId: string) => {
+    setTasks(prevTasks => 
+      prevTasks.map(task => 
+        task.id === taskId 
+          ? { ...task, isExpanded: !task.isExpanded }
+          : task
+      )
+    );
+  };
+
+  const addTag = () => {
+    if (newTag.trim() && !newTask.tags.includes(newTag.trim())) {
+      setNewTask(prev => ({
+        ...prev,
+        tags: [...prev.tags, newTag.trim()]
+      }));
+      setNewTag('');
+    }
+  };
+
+  const removeTag = (tagToRemove: string) => {
+    setNewTask(prev => ({
+      ...prev,
+      tags: prev.tags.filter(tag => tag !== tagToRemove)
+    }));
   };
 
   const handleBrainDump = async (input: string) => {
@@ -118,6 +307,8 @@ export const TaskManager: React.FC = () => {
       type: 'brain_dump',
       context: {
         existing_tasks: tasks.map(t => t.title),
+        user_id: user?.id,
+        include_historical_data: true,
       }
     });
 
@@ -140,13 +331,138 @@ export const TaskManager: React.FC = () => {
   const getPriorityColor = (priority: Task['priority']) => {
     switch (priority) {
       case 'high':
-        return 'bg-red-100 text-red-800';
+        return 'bg-red-100 text-red-800 border-red-200';
       case 'medium':
-        return 'bg-yellow-100 text-yellow-800';
+        return 'bg-yellow-100 text-yellow-800 border-yellow-200';
       case 'low':
-        return 'bg-green-100 text-green-800';
+        return 'bg-green-100 text-green-800 border-green-200';
     }
   };
+
+  const renderTask = (task: ExtendedTask, level: number = 0) => (
+    <div key={task.id} className={`${level > 0 ? 'ml-8' : ''}`}>
+      <div
+        draggable
+        onDragStart={(e) => handleDragStart(e, task.id)}
+        onDragOver={handleDragOver}
+        onDrop={(e) => handleDrop(e, task.id)}
+        className={`bg-white p-4 rounded-xl border border-gray-200 shadow-sm hover:shadow-md transition-all duration-200 ${
+          draggedTask === task.id ? 'opacity-50' : ''
+        }`}
+      >
+        <div className="flex items-start justify-between">
+          <div className="flex items-start space-x-3 flex-grow">
+            <GripVertical className="h-4 w-4 text-gray-400 mt-1 cursor-move" />
+            
+            <button
+              onClick={() => handleUpdateTaskStatus(
+                task.id,
+                task.status === 'completed' ? 'pending' : 'completed'
+              )}
+              className="mt-1"
+            >
+              {getStatusIcon(task.status)}
+            </button>
+            
+            <div className="flex-grow">
+              <div className="flex items-center space-x-2 mb-2">
+                {task.subtasks && task.subtasks.length > 0 && (
+                  <button
+                    onClick={() => toggleTaskExpansion(task.id)}
+                    className="p-1 hover:bg-gray-100 rounded"
+                  >
+                    {task.isExpanded ? (
+                      <ChevronDown className="h-4 w-4" />
+                    ) : (
+                      <ChevronRight className="h-4 w-4" />
+                    )}
+                  </button>
+                )}
+                
+                <h4 className={`font-medium ${task.status === 'completed' ? 'line-through text-gray-500' : 'text-gray-900'}`}>
+                  {task.title}
+                </h4>
+                
+                {task.recurrence_pattern && (
+                  <Repeat className="h-4 w-4 text-blue-600" title={`Repeats ${task.recurrence_pattern}`} />
+                )}
+              </div>
+              
+              {task.description && (
+                <p className="text-gray-600 text-sm mb-2">{task.description}</p>
+              )}
+              
+              <div className="flex items-center flex-wrap gap-2 mb-2">
+                <span className={`px-2 py-1 rounded-full text-xs font-medium border ${getPriorityColor(task.priority)}`}>
+                  {task.priority}
+                </span>
+                
+                {task.due_date && (
+                  <span className="flex items-center space-x-1 text-xs text-gray-500">
+                    <Calendar className="h-3 w-3" />
+                    <span>Due: {new Date(task.due_date).toLocaleDateString()}</span>
+                  </span>
+                )}
+                
+                {task.tags && task.tags.length > 0 && (
+                  <div className="flex items-center space-x-1">
+                    <Tag className="h-3 w-3 text-gray-400" />
+                    {task.tags.map(tag => (
+                      <span key={tag} className="px-2 py-1 bg-gray-100 text-gray-700 text-xs rounded-full">
+                        {tag}
+                      </span>
+                    ))}
+                  </div>
+                )}
+                
+                <span className="text-xs text-gray-500">
+                  Created: {new Date(task.created_at).toLocaleDateString()}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex items-center space-x-2">
+            {task.status !== 'completed' && (
+              <button
+                onClick={() => handleUpdateTaskStatus(
+                  task.id,
+                  task.status === 'in_progress' ? 'pending' : 'in_progress'
+                )}
+                className="p-1 text-blue-600 hover:bg-blue-50 rounded"
+                title={task.status === 'in_progress' ? 'Mark as pending' : 'Start working'}
+              >
+                <Edit3 className="h-4 w-4" />
+              </button>
+            )}
+            
+            <button
+              onClick={() => setEditingTask(task.id)}
+              className="p-1 text-gray-600 hover:bg-gray-50 rounded"
+              title="Edit task"
+            >
+              <MoreHorizontal className="h-4 w-4" />
+            </button>
+            
+            <button
+              onClick={() => handleDeleteTask(task.id)}
+              className="p-1 text-red-600 hover:bg-red-50 rounded"
+              title="Delete task"
+            >
+              <Trash2 className="h-4 w-4" />
+            </button>
+          </div>
+        </div>
+      </div>
+      
+      {/* Render subtasks */}
+      {task.isExpanded && task.subtasks && task.subtasks.length > 0 && (
+        <div className="mt-2 space-y-2">
+          {task.subtasks.map(subtask => renderTask(subtask, level + 1))}
+        </div>
+      )}
+    </div>
+  );
 
   if (loading) {
     return (
@@ -213,7 +529,7 @@ export const TaskManager: React.FC = () => {
       {aiResponse && (
         <AICoachResponse 
           response={aiResponse} 
-          onSubtaskAdd={handleSubtaskAdd}
+          onSubtaskAdd={(subtask) => handleSubtaskAdd(subtask)}
         />
       )}
 
@@ -277,6 +593,97 @@ export const TaskManager: React.FC = () => {
               </div>
             </div>
 
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Parent Task (optional)
+                </label>
+                <select
+                  value={newTask.parent_task_id}
+                  onChange={(e) => setNewTask({ ...newTask, parent_task_id: e.target.value })}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                >
+                  <option value="">None (Top-level task)</option>
+                  {tasks.map(task => (
+                    <option key={task.id} value={task.id}>{task.title}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Recurrence (optional)
+                </label>
+                <select
+                  value={newTask.recurrence_pattern}
+                  onChange={(e) => setNewTask({ ...newTask, recurrence_pattern: e.target.value })}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                >
+                  <option value="">No recurrence</option>
+                  <option value="daily">Daily</option>
+                  <option value="weekly">Weekly</option>
+                  <option value="monthly">Monthly</option>
+                  <option value="yearly">Yearly</option>
+                </select>
+              </div>
+            </div>
+
+            {newTask.recurrence_pattern && (
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Recurrence End Date (optional)
+                </label>
+                <input
+                  type="date"
+                  value={newTask.recurrence_end_date}
+                  onChange={(e) => setNewTask({ ...newTask, recurrence_end_date: e.target.value })}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                />
+              </div>
+            )}
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Tags
+              </label>
+              <div className="flex space-x-2 mb-2">
+                <input
+                  type="text"
+                  value={newTag}
+                  onChange={(e) => setNewTag(e.target.value)}
+                  onKeyPress={(e) => e.key === 'Enter' && (e.preventDefault(), addTag())}
+                  placeholder="Add a tag..."
+                  className="flex-grow px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                />
+                <button
+                  type="button"
+                  onClick={addTag}
+                  className="px-3 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors"
+                >
+                  Add
+                </button>
+              </div>
+              {newTask.tags.length > 0 && (
+                <div className="flex flex-wrap gap-2">
+                  {newTask.tags.map(tag => (
+                    <span
+                      key={tag}
+                      className="flex items-center space-x-1 px-2 py-1 bg-indigo-100 text-indigo-800 text-sm rounded-full"
+                    >
+                      <span>{tag}</span>
+                      <button
+                        type="button"
+                        onClick={() => removeTag(tag)}
+                        className="text-indigo-600 hover:text-indigo-800"
+                      >
+                        ×
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+
             <div className="flex space-x-3">
               <button
                 type="submit"
@@ -306,74 +713,7 @@ export const TaskManager: React.FC = () => {
             <p className="text-gray-600">Create your first task or try the brain dump feature!</p>
           </div>
         ) : (
-          tasks.map((task) => (
-            <div
-              key={task.id}
-              className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm hover:shadow-md transition-shadow"
-            >
-              <div className="flex items-start justify-between">
-                <div className="flex items-start space-x-3 flex-grow">
-                  <button
-                    onClick={() => handleUpdateTaskStatus(
-                      task.id,
-                      task.status === 'completed' ? 'pending' : 'completed'
-                    )}
-                    className="mt-1"
-                  >
-                    {getStatusIcon(task.status)}
-                  </button>
-                  
-                  <div className="flex-grow">
-                    <h4 className={`font-medium ${task.status === 'completed' ? 'line-through text-gray-500' : 'text-gray-900'}`}>
-                      {task.title}
-                    </h4>
-                    {task.description && (
-                      <p className="text-gray-600 text-sm mt-1">{task.description}</p>
-                    )}
-                    
-                    <div className="flex items-center space-x-3 mt-2">
-                      <span className={`px-2 py-1 rounded-full text-xs font-medium ${getPriorityColor(task.priority)}`}>
-                        {task.priority}
-                      </span>
-                      
-                      {task.due_date && (
-                        <span className="text-xs text-gray-500">
-                          Due: {new Date(task.due_date).toLocaleDateString()}
-                        </span>
-                      )}
-                      
-                      <span className="text-xs text-gray-500">
-                        Created: {new Date(task.created_at).toLocaleDateString()}
-                      </span>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="flex items-center space-x-2">
-                  {task.status !== 'completed' && (
-                    <button
-                      onClick={() => handleUpdateTaskStatus(
-                        task.id,
-                        task.status === 'in_progress' ? 'pending' : 'in_progress'
-                      )}
-                      className="p-1 text-blue-600 hover:bg-blue-50 rounded"
-                      title={task.status === 'in_progress' ? 'Mark as pending' : 'Start working'}
-                    >
-                      <Edit3 className="h-4 w-4" />
-                    </button>
-                  )}
-                  
-                  <button
-                    onClick={() => handleDeleteTask(task.id)}
-                    className="p-1 text-red-600 hover:bg-red-50 rounded"
-                    title="Delete task"
-                  >
-                    <Trash2 className="h-4 w-4" />
-                  </button>
-                </div>
-              </div>
-            </div>
-          ))
+          tasks.map(task => renderTask(task))
         )}
       </div>
     </div>

@@ -91,7 +91,10 @@ function App() {
     const response = await getCoachingResponse({
       input,
       type: 'voice_note',
-      context: {}
+      context: {
+        user_id: user?.id,
+        include_historical_data: true,
+      }
     });
 
     if (response) {
@@ -156,7 +159,10 @@ function App() {
     const response = await getCoachingResponse({
       input,
       type: 'voice_note',
-      context: {}
+      context: {
+        user_id: user?.id,
+        include_historical_data: true,
+      }
     });
 
     if (response) {
@@ -200,7 +206,9 @@ function App() {
   };
 
   const openAuthModal = (mode: 'signin' | 'signup') => {
-    setAuthMode(mode);
+    set
+
+Mode(mode);
     setShowAuthModal(true);
   };
 
@@ -695,34 +703,34 @@ function App() {
                     <div className="w-12 h-12 bg-indigo-100 rounded-xl flex items-center justify-center mb-6">
                       <Brain className="h-6 w-6 text-indigo-600" />
                     </div>
-                    <h4 className="text-xl font-semibold text-gray-900 mb-4">Gemini AI Coaching</h4>
+                    <h4 className="text-xl font-semibold text-gray-900 mb-4">Enhanced AI Coaching</h4>
                     <p className="text-gray-600 leading-relaxed">
-                      Advanced AI powered by Google's Gemini that understands your current state and provides 
-                      personalized, gentle guidance with natural voice interaction.
+                      Advanced AI powered by Google's Gemini that learns from your patterns and provides 
+                      deeply personalized, contextual guidance with natural voice interaction.
                     </p>
                   </div>
 
                   {/* Feature 2 */}
                   <div className="bg-white rounded-2xl p-8 shadow-lg hover:shadow-xl transition-all duration-300 border border-gray-100">
                     <div className="w-12 h-12 bg-purple-100 rounded-xl flex items-center justify-center mb-6">
-                      <Heart className="h-6 w-6 text-purple-600" />
+                      <CheckSquare className="h-6 w-6 text-purple-600" />
                     </div>
-                    <h4 className="text-xl font-semibold text-gray-900 mb-4">ElevenLabs Voice</h4>
+                    <h4 className="text-xl font-semibold text-gray-900 mb-4">Smart Task Management</h4>
                     <p className="text-gray-600 leading-relaxed">
-                      Premium text-to-speech with warm, encouraging voices that make AI coaching feel 
-                      natural and supportive, designed for neurodivergent comfort.
+                      Break down overwhelming tasks into manageable sub-tasks, set up recurring tasks, 
+                      and organize with drag-and-drop reordering designed for neurodivergent minds.
                     </p>
                   </div>
 
                   {/* Feature 3 */}
                   <div className="bg-white rounded-2xl p-8 shadow-lg hover:shadow-xl transition-all duration-300 border border-gray-100">
                     <div className="w-12 h-12 bg-pink-100 rounded-xl flex items-center justify-center mb-6">
-                      <Sparkles className="h-6 w-6 text-pink-600" />
+                      <BarChart3 className="h-6 w-6 text-pink-600" />
                     </div>
-                    <h4 className="text-xl font-semibold text-gray-900 mb-4">Smart Task Breakdown</h4>
+                    <h4 className="text-xl font-semibold text-gray-900 mb-4">Mood Insights & Trends</h4>
                     <p className="text-gray-600 leading-relaxed">
-                      AI automatically breaks down overwhelming tasks into manageable steps, 
-                      adapting to your energy levels and cognitive patterns.
+                      Track your mood, energy, and focus levels with beautiful visualizations and 
+                      AI-powered insights that reveal patterns and correlations with your productivity.
                     </p>
                   </div>
                 </div>

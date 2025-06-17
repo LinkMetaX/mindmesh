@@ -11,7 +11,10 @@ import {
   Clock,
   Download,
   Upload,
-  ArrowLeftRight
+  ArrowLeftRight,
+  Edit3,
+  Save,
+  X
 } from 'lucide-react';
 import { useAuth } from '../hooks/useAuth';
 
@@ -21,6 +24,7 @@ interface Integration {
   is_active: boolean;
   last_sync_at: string | null;
   integration_data: any;
+  sync_rules: any;
   created_at: string;
 }
 
@@ -37,6 +41,22 @@ interface SyncResult {
   errors: string[];
 }
 
+interface SyncRule {
+  import_enabled: boolean;
+  export_enabled: boolean;
+  import_filters: {
+    calendar_ids?: string[];
+    database_ids?: string[];
+    tags?: string[];
+    priority_filter?: 'all' | 'high' | 'medium' | 'low';
+  };
+  export_filters: {
+    tags?: string[];
+    priority_filter?: 'all' | 'high' | 'medium' | 'low';
+    status_filter?: string[];
+  };
+}
+
 export const IntegrationsManager: React.FC = () => {
   const { user } = useAuth();
   const [integrations, setIntegrations] = useState<Integration[]>([]);
@@ -44,6 +64,8 @@ export const IntegrationsManager: React.FC = () => {
   const [syncing, setSyncing] = useState(false);
   const [lastSyncResult, setLastSyncResult] = useState<SyncResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [editingRules, setEditingRules] = useState<string | null>(null);
+  const [tempRules, setTempRules] = useState<SyncRule | null>(null);
 
   useEffect(() => {
     if (user) {
@@ -93,7 +115,6 @@ export const IntegrationsManager: React.FC = () => {
 
       if (response.ok) {
         const data = await response.json();
-        // Store user ID in localStorage for the callback
         localStorage.setItem('mindmesh_user_id', user?.id || '');
         window.open(data.auth_url, '_blank', 'width=500,height=600');
       }
@@ -152,7 +173,7 @@ export const IntegrationsManager: React.FC = () => {
       if (response.ok) {
         const result = await response.json();
         setLastSyncResult(result);
-        loadIntegrations(); // Refresh integrations to update last sync time
+        loadIntegrations();
       } else {
         const errorData = await response.json();
         setError(errorData.error || 'Sync failed');
@@ -191,6 +212,56 @@ export const IntegrationsManager: React.FC = () => {
     }
   };
 
+  const updateSyncRules = async (integrationId: string, rules: SyncRule) => {
+    try {
+      const response = await fetch(
+        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/update-sync-rules`,
+        {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            user_id: user?.id,
+            integration_id: integrationId,
+            sync_rules: rules,
+          }),
+        }
+      );
+
+      if (response.ok) {
+        loadIntegrations();
+        setEditingRules(null);
+        setTempRules(null);
+      }
+    } catch (err) {
+      console.error('Error updating sync rules:', err);
+      setError('Failed to update sync rules');
+    }
+  };
+
+  const startEditingRules = (integration: Integration) => {
+    setEditingRules(integration.id);
+    setTempRules(integration.sync_rules || {
+      import_enabled: true,
+      export_enabled: true,
+      import_filters: {},
+      export_filters: {},
+    });
+  };
+
+  const cancelEditingRules = () => {
+    setEditingRules(null);
+    setTempRules(null);
+  };
+
+  const saveRules = () => {
+    if (editingRules && tempRules) {
+      updateSyncRules(editingRules, tempRules);
+    }
+  };
+
   const getIntegrationIcon = (type: string) => {
     switch (type) {
       case 'google_calendar':
@@ -224,6 +295,152 @@ export const IntegrationsManager: React.FC = () => {
     if (diffMins < 60) return `${diffMins}m ago`;
     if (diffMins < 1440) return `${Math.floor(diffMins / 60)}h ago`;
     return date.toLocaleDateString();
+  };
+
+  const renderSyncRulesEditor = (integration: Integration) => {
+    if (editingRules !== integration.id || !tempRules) return null;
+
+    return (
+      <div className="mt-4 p-4 bg-gray-50 rounded-lg border">
+        <div className="flex items-center justify-between mb-4">
+          <h5 className="font-medium text-gray-900">Sync Rules</h5>
+          <div className="flex space-x-2">
+            <button
+              onClick={saveRules}
+              className="flex items-center space-x-1 px-3 py-1 bg-green-600 text-white rounded text-sm hover:bg-green-700"
+            >
+              <Save className="h-3 w-3" />
+              <span>Save</span>
+            </button>
+            <button
+              onClick={cancelEditingRules}
+              className="flex items-center space-x-1 px-3 py-1 bg-gray-600 text-white rounded text-sm hover:bg-gray-700"
+            >
+              <X className="h-3 w-3" />
+              <span>Cancel</span>
+            </button>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 gap-4">
+          {/* Import Settings */}
+          <div className="space-y-3">
+            <h6 className="font-medium text-gray-800 flex items-center space-x-2">
+              <Download className="h-4 w-4" />
+              <span>Import Settings</span>
+            </h6>
+            
+            <label className="flex items-center space-x-2">
+              <input
+                type="checkbox"
+                checked={tempRules.import_enabled}
+                onChange={(e) => setTempRules({
+                  ...tempRules,
+                  import_enabled: e.target.checked
+                })}
+                className="rounded border-gray-300"
+              />
+              <span className="text-sm">Enable import</span>
+            </label>
+
+            {tempRules.import_enabled && (
+              <div className="space-y-2 ml-4">
+                <div>
+                  <label className="block text-xs font-medium text-gray-700 mb-1">
+                    Priority Filter
+                  </label>
+                  <select
+                    value={tempRules.import_filters.priority_filter || 'all'}
+                    onChange={(e) => setTempRules({
+                      ...tempRules,
+                      import_filters: {
+                        ...tempRules.import_filters,
+                        priority_filter: e.target.value as any
+                      }
+                    })}
+                    className="w-full text-xs px-2 py-1 border border-gray-300 rounded"
+                  >
+                    <option value="all">All priorities</option>
+                    <option value="high">High priority only</option>
+                    <option value="medium">Medium priority and above</option>
+                    <option value="low">Low priority and above</option>
+                  </select>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Export Settings */}
+          <div className="space-y-3">
+            <h6 className="font-medium text-gray-800 flex items-center space-x-2">
+              <Upload className="h-4 w-4" />
+              <span>Export Settings</span>
+            </h6>
+            
+            <label className="flex items-center space-x-2">
+              <input
+                type="checkbox"
+                checked={tempRules.export_enabled}
+                onChange={(e) => setTempRules({
+                  ...tempRules,
+                  export_enabled: e.target.checked
+                })}
+                className="rounded border-gray-300"
+              />
+              <span className="text-sm">Enable export</span>
+            </label>
+
+            {tempRules.export_enabled && (
+              <div className="space-y-2 ml-4">
+                <div>
+                  <label className="block text-xs font-medium text-gray-700 mb-1">
+                    Priority Filter
+                  </label>
+                  <select
+                    value={tempRules.export_filters.priority_filter || 'all'}
+                    onChange={(e) => setTempRules({
+                      ...tempRules,
+                      export_filters: {
+                        ...tempRules.export_filters,
+                        priority_filter: e.target.value as any
+                      }
+                    })}
+                    className="w-full text-xs px-2 py-1 border border-gray-300 rounded"
+                  >
+                    <option value="all">All priorities</option>
+                    <option value="high">High priority only</option>
+                    <option value="medium">Medium priority and above</option>
+                    <option value="low">Low priority and above</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-gray-700 mb-1">
+                    Status Filter
+                  </label>
+                  <select
+                    value={tempRules.export_filters.status_filter?.[0] || 'all'}
+                    onChange={(e) => setTempRules({
+                      ...tempRules,
+                      export_filters: {
+                        ...tempRules.export_filters,
+                        status_filter: e.target.value === 'all' ? [] : [e.target.value]
+                      }
+                    })}
+                    className="w-full text-xs px-2 py-1 border border-gray-300 rounded"
+                  >
+                    <option value="all">All statuses</option>
+                    <option value="completed">Completed only</option>
+                    <option value="in_progress">In progress only</option>
+                    <option value="pending">Pending only</option>
+                  </select>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
   };
 
   if (loading) {
@@ -328,6 +545,17 @@ export const IntegrationsManager: React.FC = () => {
                   </div>
                   
                   <button
+                    onClick={() => {
+                      const integration = integrations.find(i => i.integration_type === 'google_calendar');
+                      if (integration) startEditingRules(integration);
+                    }}
+                    className="p-2 text-gray-600 hover:bg-gray-50 rounded-lg transition-colors"
+                    title="Configure sync rules"
+                  >
+                    <Edit3 className="h-4 w-4" />
+                  </button>
+                  
+                  <button
                     onClick={() => syncIntegrations('google_calendar')}
                     disabled={syncing}
                     className="p-2 text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"
@@ -358,6 +586,10 @@ export const IntegrationsManager: React.FC = () => {
               )}
             </div>
           </div>
+          
+          {/* Render sync rules editor for Google Calendar */}
+          {integrations.find(i => i.integration_type === 'google_calendar') && 
+           renderSyncRulesEditor(integrations.find(i => i.integration_type === 'google_calendar')!)}
         </div>
 
         {/* Notion */}
@@ -387,6 +619,17 @@ export const IntegrationsManager: React.FC = () => {
                       )}
                     </p>
                   </div>
+                  
+                  <button
+                    onClick={() => {
+                      const integration = integrations.find(i => i.integration_type === 'notion');
+                      if (integration) startEditingRules(integration);
+                    }}
+                    className="p-2 text-gray-600 hover:bg-gray-50 rounded-lg transition-colors"
+                    title="Configure sync rules"
+                  >
+                    <Edit3 className="h-4 w-4" />
+                  </button>
                   
                   <button
                     onClick={() => syncIntegrations('notion')}
@@ -419,13 +662,17 @@ export const IntegrationsManager: React.FC = () => {
               )}
             </div>
           </div>
+          
+          {/* Render sync rules editor for Notion */}
+          {integrations.find(i => i.integration_type === 'notion') && 
+           renderSyncRulesEditor(integrations.find(i => i.integration_type === 'notion')!)}
         </div>
       </div>
 
-      {/* Sync Settings */}
+      {/* Global Sync Settings */}
       {integrations.length > 0 && (
         <div className="bg-gray-50 rounded-xl p-6">
-          <h4 className="text-lg font-semibold text-gray-900 mb-4">Sync Settings</h4>
+          <h4 className="text-lg font-semibold text-gray-900 mb-4">Global Sync Settings</h4>
           
           <div className="space-y-4">
             <div className="flex items-center justify-between">
@@ -443,8 +690,8 @@ export const IntegrationsManager: React.FC = () => {
             
             <div className="flex items-center justify-between">
               <div>
-                <p className="font-medium text-gray-900">Sync direction</p>
-                <p className="text-sm text-gray-600">Choose how data flows between MindMesh and your tools</p>
+                <p className="font-medium text-gray-900">Default sync direction</p>
+                <p className="text-sm text-gray-600">Default behavior for new integrations</p>
               </div>
               <select className="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
                 <option value="bidirectional">Two-way sync</option>
