@@ -1,25 +1,5 @@
 import React from 'react';
-import { 
-  Brain, 
-  CheckSquare, 
-  BarChart3, 
-  Calendar, 
-  Notion, 
-  Zap, 
-  Shield, 
-  Heart,
-  Mail,
-  Phone,
-  MapPin,
-  Clock,
-  Users,
-  Star,
-  Check,
-  ArrowRight,
-  Lightbulb,
-  Target,
-  Sparkles
-} from 'lucide-react';
+import { Brain, CheckSquare, BarChart3, Calendar, Option as Notion, Zap, Shield, Heart, Mail, Phone, MapPin, Clock, Users, Star, Check, ArrowRight, Lightbulb, Target, Sparkles } from 'lucide-react';
 
 interface ContentPagesProps {
   page: 'features' | 'pricing' | 'integrations' | 'help' | 'contact' | 'privacy';
