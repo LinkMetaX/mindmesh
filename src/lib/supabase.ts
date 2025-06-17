@@ -29,6 +29,11 @@ export interface Task {
   created_at: string;
   updated_at: string;
   completed_at?: string;
+  parent_task_id?: string;
+  recurrence_pattern?: string;
+  recurrence_end_date?: string;
+  task_order?: number;
+  tags?: string[];
 }
 
 export interface MoodEntry {
@@ -53,6 +58,7 @@ export interface UserIntegration {
   last_sync_at?: string;
   created_at: string;
   updated_at: string;
+  sync_rules?: any;
 }
 
 export interface SyncMapping {
@@ -118,6 +124,7 @@ export const getTasks = async (status?: Task['status']) => {
   let query = supabase
     .from('tasks')
     .select('*')
+    .order('task_order', { ascending: true })
     .order('created_at', { ascending: false });
   
   if (status) {
